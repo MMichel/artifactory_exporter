@@ -66,9 +66,16 @@ func (c *Client) makeRequest(method string, path string, body []byte, headers **
 	return c.client.Do(req)
 }
 
-func (c *Client) procRespErr(resp *http.Response, fPath string) (*ApiResponse, error) {
+func (c *Client) handleResponse(resp *http.Response, fullPath string) (*ApiResponse, error) {
 	var apiErrors APIErrors
-	bodyBytes, _ := ioutil.ReadAll(resp.Body)
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		c.logger.Error(
+			logMsgErrRespBody,
+			"err", err,
+		)
+		return nil, err
+	}
 	if err := json.Unmarshal(bodyBytes, &apiErrors); err != nil {
 		c.logger.Error(
 			logMsgErrUnmarshall,
@@ -76,25 +83,30 @@ func (c *Client) procRespErr(resp *http.Response, fPath string) (*ApiResponse, e
 		)
 		return nil, &UnmarshalError{
 			message:  err.Error(),
-			endpoint: fPath,
+			endpoint: fullPath,
 		}
 	}
-	c.logger.Error(
-		logMsgErrAPICall,
-		"endpoint", fPath,
-		"err", fmt.Sprintf("%v", apiErrors.Errors),
-		"status", resp.StatusCode,
-	)
-	return nil, &APIError{
-		message:  fmt.Sprintf("%v", apiErrors.Errors),
-		endpoint: fPath,
-		// status:   resp.StatusCode, // Maybe it would be worth returning it too? As with http.StatusNotFound.
+	if !slices.Contains(httpSuccCodes, resp.StatusCode) {
+		c.logger.Error(
+			logMsgErrAPICall,
+			"endpoint", fullPath,
+			"err", fmt.Sprintf("%v", apiErrors.Errors),
+			"status", resp.StatusCode,
+		)
+		return nil, &APIError{
+			message:  fmt.Sprintf("%v", apiErrors.Errors),
+			endpoint: fullPath,
+		}
 	}
+	response := &ApiResponse{
+		Body:   bodyBytes,
+		NodeId: resp.Header.Get("x-artifactory-node-id"),
+	}
+	return response, nil
 }
 
 // FetchHTTP is a wrapper function for making all Get API calls
 func (c *Client) FetchHTTP(path string) (*ApiResponse, error) {
-	var response ApiResponse
 	fullPath := fmt.Sprintf("%s/api/%s", c.URI, path)
 	c.logger.Debug(
 		"Fetching http",
@@ -109,55 +121,12 @@ func (c *Client) FetchHTTP(path string) (*ApiResponse, error) {
 		)
 		return nil, err
 	}
-	response.NodeId = resp.Header.Get("x-artifactory-node-id")
 	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		var apiErrors APIErrors
-		bodyBytes, _ := ioutil.ReadAll(resp.Body)
-		if err := json.Unmarshal(bodyBytes, &apiErrors); err != nil {
-			c.logger.Error(
-				logMsgErrUnmarshall,
-				"err", err,
-			)
-			return nil, &UnmarshalError{
-				message:  err.Error(),
-				endpoint: fullPath,
-			}
-		}
-		c.logger.Warn(
-			"The endpoint does not exist",
-			"endpoint", fullPath,
-			"err", fmt.Sprintf("%v", apiErrors.Errors),
-			"status", http.StatusNotFound,
-		)
-		return nil, &APIError{
-			message:  fmt.Sprintf("%v", apiErrors.Errors),
-			endpoint: fullPath,
-			status:   http.StatusNotFound,
-		}
-	}
-
-	if !slices.Contains(httpSuccCodes, resp.StatusCode) {
-		return c.procRespErr(resp, fullPath)
-	}
-
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		c.logger.Error(
-			logMsgErrRespBody,
-			"err", err.Error(),
-		)
-		return nil, err
-	}
-	response.Body = bodyBytes
-
-	return &response, nil
+	return c.handleResponse(resp, fullPath)
 }
 
 // QueryAQL is a wrapper function for making an query to AQL endpoint
 func (c *Client) QueryAQL(query []byte) (*ApiResponse, error) {
-	var response ApiResponse
 	fullPath := fmt.Sprintf("%s/api/search/aql", c.URI)
 	c.logger.Debug(
 		"Running AQL query",
@@ -172,42 +141,20 @@ func (c *Client) QueryAQL(query []byte) (*ApiResponse, error) {
 		)
 		return nil, err
 	}
-	response.NodeId = resp.Header.Get("x-artifactory-node-id")
 	defer resp.Body.Close()
-	if !slices.Contains(httpSuccCodes, resp.StatusCode) {
-		return c.procRespErr(resp, fullPath)
-	}
-
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		c.logger.Error(
-			logMsgErrRespBody,
-			"err", err.Error(),
-		)
-		return nil, err
-	}
-	response.Body = bodyBytes
-	return &response, nil
+	return c.handleResponse(resp, fullPath)
 }
 
 // PostHTTP is a wrapper function for making all Post API calls
 // Note: the API endpoint (e.g. "/artifactory" or "/access") needs to be part of path
 func (c *Client) PostHTTP(path string, body []byte, headers *map[string]string) (*ApiResponse, error) {
-	var response ApiResponse
-
 	artifactoryURI := strings.TrimSuffix(c.URI, "/artifactory")
 	fullPath := fmt.Sprintf("%s/%s", artifactoryURI, path)
-
 	c.logger.Debug(
 		"Posting http",
 		"path", fullPath,
 	)
-
 	resp, err := c.makeRequest("POST", fullPath, body, &headers)
-	c.logger.Debug(
-		"Received response with",
-		"status", resp.StatusCode,
-	)
 	if err != nil {
 		c.logger.Error(
 			logMsgErrAPICall,
@@ -217,46 +164,5 @@ func (c *Client) PostHTTP(path string, body []byte, headers *map[string]string) 
 		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		var apiErrors APIErrors
-		bodyBytes, _ := ioutil.ReadAll(resp.Body)
-		if err := json.Unmarshal(bodyBytes, &apiErrors); err != nil {
-			c.logger.Error(
-				logMsgErrUnmarshall,
-				"err", err,
-			)
-			return nil, &UnmarshalError{
-				message:  err.Error(),
-				endpoint: fullPath,
-			}
-		}
-		c.logger.Warn(
-			"The endpoint does not exist",
-			"endpoint", fullPath,
-			"err", fmt.Sprintf("%v", apiErrors.Errors),
-			"status", http.StatusNotFound,
-		)
-		return nil, &APIError{
-			message:  fmt.Sprintf("%v", apiErrors.Errors),
-			endpoint: fullPath,
-			status:   http.StatusNotFound,
-		}
-	}
-
-	if !slices.Contains(httpSuccCodes, resp.StatusCode) {
-		return c.procRespErr(resp, fullPath)
-	}
-
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		c.logger.Error(
-			logMsgErrRespBody,
-			"err", err.Error(),
-		)
-		return nil, err
-	}
-	response.Body = bodyBytes
-
-	return &response, nil
+	return c.handleResponse(resp, fullPath)
 }
