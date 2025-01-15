@@ -76,20 +76,30 @@ func (c *Client) handleResponse(resp *http.Response, fullPath string) (*ApiRespo
 		)
 		return nil, err
 	}
-	if resp.StatusCode == http.StatusNotFound {
-		c.logger.Warn(
-			"The endpoint does not exist",
-			"endpoint", fullPath,
-			"err", fmt.Sprintf("%v", apiErrors.Errors),
-			"status", http.StatusNotFound,
-		)
-		return nil, &APIError{
-			message:  fmt.Sprintf("%v", apiErrors.Errors),
-			endpoint: fullPath,
-			status:   http.StatusNotFound,
-		}
-	}
 	if !slices.Contains(httpSuccCodes, resp.StatusCode) {
+		if err := json.Unmarshal(bodyBytes, &apiErrors); err != nil {
+			c.logger.Error(
+				logMsgErrUnmarshall,
+				"err", err.Error(),
+			)
+			return nil, &UnmarshalError{
+				message:  err.Error(),
+				endpoint: fullPath,
+			}
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			c.logger.Warn(
+				"The endpoint does not exist",
+				"endpoint", fullPath,
+				"err", fmt.Sprintf("%v", apiErrors.Errors),
+				"status", http.StatusNotFound,
+			)
+			return nil, &APIError{
+				message:  fmt.Sprintf("%v", apiErrors.Errors),
+				endpoint: fullPath,
+				status:   http.StatusNotFound,
+			}
+		}
 		c.logger.Error(
 			logMsgErrAPICall,
 			"endpoint", fullPath,
@@ -99,18 +109,10 @@ func (c *Client) handleResponse(resp *http.Response, fullPath string) (*ApiRespo
 		return nil, &APIError{
 			message:  fmt.Sprintf("%v", apiErrors.Errors),
 			endpoint: fullPath,
+			// status:   resp.StatusCode, // Maybe it would be worth returning it too? As with http.StatusNotFound.
 		}
 	}
-	if err := json.Unmarshal(bodyBytes, &apiErrors); err != nil {
-		c.logger.Error(
-			logMsgErrUnmarshall,
-			"err", err.Error(),
-		)
-		return nil, &UnmarshalError{
-			message:  err.Error(),
-			endpoint: fullPath,
-		}
-	}
+
 	response := &ApiResponse{
 		Body:   bodyBytes,
 		NodeId: resp.Header.Get("x-artifactory-node-id"),
