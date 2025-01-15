@@ -76,14 +76,17 @@ func (c *Client) handleResponse(resp *http.Response, fullPath string) (*ApiRespo
 		)
 		return nil, err
 	}
-	if err := json.Unmarshal(bodyBytes, &apiErrors); err != nil {
-		c.logger.Error(
-			logMsgErrUnmarshall,
-			"err", err.Error(),
+	if resp.StatusCode == http.StatusNotFound {
+		c.logger.Warn(
+			"The endpoint does not exist",
+			"endpoint", fullPath,
+			"err", fmt.Sprintf("%v", apiErrors.Errors),
+			"status", http.StatusNotFound,
 		)
-		return nil, &UnmarshalError{
-			message:  err.Error(),
+		return nil, &APIError{
+			message:  fmt.Sprintf("%v", apiErrors.Errors),
 			endpoint: fullPath,
+			status:   http.StatusNotFound,
 		}
 	}
 	if !slices.Contains(httpSuccCodes, resp.StatusCode) {
@@ -95,6 +98,16 @@ func (c *Client) handleResponse(resp *http.Response, fullPath string) (*ApiRespo
 		)
 		return nil, &APIError{
 			message:  fmt.Sprintf("%v", apiErrors.Errors),
+			endpoint: fullPath,
+		}
+	}
+	if err := json.Unmarshal(bodyBytes, &apiErrors); err != nil {
+		c.logger.Error(
+			logMsgErrUnmarshall,
+			"err", err.Error(),
+		)
+		return nil, &UnmarshalError{
+			message:  err.Error(),
 			endpoint: fullPath,
 		}
 	}
